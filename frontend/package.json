@@ -21,7 +21,13 @@
     "react-hot-toast": "^2.4.1",
     "@react-three/fiber": "^8.15.19",
     "@react-three/drei": "^9.92.7",
-    "three": "^0.160.0"
+    "three": "^0.160.0",
+    "react-three-rapier": "^0.10.0",
+    "@babylonjs/core": "^6.33.1",
+    "@babylonjs/loaders": "^6.33.1",
+    "@babylonjs/materials": "^6.33.1",
+    "@babylonjs/gui": "^6.33.1",
+    "cannon": "^0.20.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
