@@ -61,7 +61,7 @@ class OpenAIService {
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4-1106-preview', // GPT-4.1 Turbo model
+        model: 'gpt-4.1', // GPT-4.1 Turbo model
         messages: [
           {
             role: 'system',
