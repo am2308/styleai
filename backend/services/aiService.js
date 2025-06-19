@@ -1,23 +1,38 @@
 import axios from 'axios';
 import marketplaceService from './marketplaceService.js';
 
-// Enhanced AI service with better outfit generation and marketplace integration
-class LocalAIService {
+// Enhanced AI service with OpenAI GPT-4.1 integration
+class OpenAIService {
   constructor() {
-    console.log('Using enhanced local AI service for outfit recommendations');
+    this.openaiApiKey = process.env.OPENAI_API_KEY;
+    console.log('Using OpenAI GPT-4.1 service for outfit recommendations');
+    
+    if (!this.openaiApiKey) {
+      console.warn('⚠️  OpenAI API key not found. Add OPENAI_API_KEY to your environment variables for AI-powered recommendations.');
+    }
   }
 
   async generateOutfitRecommendations(wardrobeItems, userProfile, occasion = null) {
     try {
       console.log('Generating outfit recommendations for', wardrobeItems.length, 'items, occasion:', occasion);
 
-      // Analyze wardrobe comprehensively
+      // Try OpenAI first if API key is available
+      if (this.openaiApiKey && wardrobeItems.length > 0) {
+        try {
+          const openaiRecommendations = await this.getOpenAIOutfitRecommendations(wardrobeItems, userProfile, occasion);
+          if (openaiRecommendations && openaiRecommendations.recommendations.length > 0) {
+            console.log('Generated OpenAI recommendations:', openaiRecommendations.recommendations.length);
+            return openaiRecommendations;
+          }
+        } catch (error) {
+          console.log('OpenAI API failed, falling back to local AI:', error.message);
+        }
+      }
+
+      // Fallback to local AI analysis
       const analysis = this.analyzeWardrobe(wardrobeItems, userProfile);
-      
-      // Generate multiple outfit combinations using ALL items
       const outfits = this.generateComprehensiveOutfitCombinations(wardrobeItems, userProfile, occasion);
       
-      // Generate missing items for each outfit with marketplace products
       const outfitsWithMissing = await Promise.all(
         outfits.map(async outfit => {
           const missingItems = await this.identifyMissingItemsWithProducts(outfit, wardrobeItems, userProfile);
@@ -28,7 +43,7 @@ class LocalAIService {
         })
       );
 
-      console.log('Generated recommendations:', outfitsWithMissing.length);
+      console.log('Generated local recommendations:', outfitsWithMissing.length);
 
       return {
         recommendations: outfitsWithMissing,
@@ -40,7 +55,164 @@ class LocalAIService {
     }
   }
 
-  // Enhanced wardrobe analysis
+  async getOpenAIOutfitRecommendations(wardrobeItems, userProfile, occasion) {
+    const prompt = this.buildOutfitPrompt(wardrobeItems, userProfile, occasion);
+    
+    const response = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-4-1106-preview', // GPT-4.1 Turbo model
+        messages: [
+          {
+            role: 'system',
+            content: `You are an expert fashion stylist and personal shopper with deep knowledge of:
+            - Color theory and coordination
+            - Body type styling
+            - Occasion-appropriate dressing
+            - Current fashion trends
+            - Brand knowledge and quality assessment
+            
+            Provide detailed outfit recommendations in JSON format. Be creative, practical, and consider the user's personal style preferences.`
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 2000,
+        temperature: 0.7,
+        response_format: { type: "json_object" }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${this.openaiApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+
+    const content = response.data.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No content received from OpenAI');
+    }
+
+    let aiResponse;
+    try {
+      aiResponse = JSON.parse(content);
+    } catch (parseError) {
+      console.error('Failed to parse OpenAI response:', parseError);
+      throw new Error('Invalid JSON response from OpenAI');
+    }
+
+    // Transform OpenAI response to our format
+    return this.transformOpenAIResponse(aiResponse, wardrobeItems, userProfile);
+  }
+
+  buildOutfitPrompt(wardrobeItems, userProfile, occasion) {
+    const wardrobeDescription = wardrobeItems.map(item => 
+      `- ${item.name} (${item.category}, ${item.color})`
+    ).join('\n');
+
+    return `Create outfit recommendations using the following wardrobe items:
+
+WARDROBE ITEMS:
+${wardrobeDescription}
+
+USER PROFILE:
+- Skin Tone: ${userProfile.skinTone || 'Not specified'}
+- Body Type: ${userProfile.bodyType || 'Not specified'}
+- Style Preference: ${userProfile.preferredStyle || 'Not specified'}
+${occasion ? `- Occasion: ${occasion}` : ''}
+
+TASK:
+Create 3-5 complete outfit combinations using ONLY the provided wardrobe items. For each outfit:
+
+1. Select 2-4 items that work well together
+2. Provide styling confidence score (0-100)
+3. Explain why the combination works
+4. Give styling tips
+5. Identify any missing items that would complete the look
+
+Return response in this JSON format:
+{
+  "recommendations": [
+    {
+      "items": ["item_id_1", "item_id_2"],
+      "confidence": 85,
+      "occasion": "Casual",
+      "description": "Stylish casual outfit perfect for...",
+      "styleNotes": "The color combination creates...",
+      "missingItems": [
+        {
+          "category": "Footwear",
+          "description": "White sneakers to complete the casual look",
+          "priority": "medium"
+        }
+      ]
+    }
+  ],
+  "wardrobeAnalysis": {
+    "strengths": ["Good color variety", "Versatile basics"],
+    "gaps": ["Missing formal shoes", "Need more outerwear"],
+    "suggestions": ["Add a blazer for professional looks"]
+  }
+}
+
+IMPORTANT: 
+- Use actual item IDs from the wardrobe
+- Consider color coordination, style harmony, and occasion appropriateness
+- Be specific about why combinations work
+- Suggest realistic missing items with proper categories`;
+  }
+
+  transformOpenAIResponse(aiResponse, wardrobeItems, userProfile) {
+    const recommendations = aiResponse.recommendations || [];
+    
+    const transformedRecommendations = recommendations.map((rec, index) => {
+      // Validate that recommended items exist in wardrobe
+      const validItems = rec.items?.filter(itemId => 
+        wardrobeItems.some(item => item.id === itemId)
+      ) || [];
+
+      // If no valid items, create a combination from available items
+      if (validItems.length === 0 && wardrobeItems.length >= 2) {
+        validItems.push(wardrobeItems[0].id, wardrobeItems[1].id);
+      }
+
+      return {
+        id: `openai_outfit_${index}`,
+        items: validItems,
+        confidence: (rec.confidence || 75) / 100, // Convert to 0-1 scale
+        occasion: rec.occasion || 'Casual',
+        description: rec.description || 'AI-curated outfit combination',
+        styleNotes: rec.styleNotes || 'Thoughtfully selected pieces that complement each other',
+        missingItems: this.transformMissingItems(rec.missingItems || [])
+      };
+    }).filter(rec => rec.items.length > 0);
+
+    return {
+      recommendations: transformedRecommendations,
+      wardrobeAnalysis: aiResponse.wardrobeAnalysis || this.analyzeWardrobe(wardrobeItems, userProfile)
+    };
+  }
+
+  transformMissingItems(missingItems) {
+    return missingItems.map(item => ({
+      category: item.category || 'Accessories',
+      color: item.color || 'Black',
+      description: item.description || 'Recommended item to complete the look',
+      searchTerms: [item.category?.toLowerCase(), item.color?.toLowerCase()].filter(Boolean),
+      priority: item.priority || 'medium',
+      priceRange: {
+        min: 20,
+        max: 100
+      },
+      availableProducts: [] // Will be populated by marketplace service
+    }));
+  }
+
+  // Enhanced wardrobe analysis with AI insights
   analyzeWardrobe(items, userProfile) {
     const categories = {};
     const colors = {};
@@ -50,7 +222,6 @@ class LocalAIService {
       categories[item.category] = (categories[item.category] || 0) + 1;
       colors[item.color] = (colors[item.color] || 0) + 1;
       
-      // Analyze item suitability for occasions
       const itemOccasions = this.getItemOccasions(item, userProfile);
       itemOccasions.forEach(occ => {
         occasions[occ] = (occasions[occ] || 0) + 1;
@@ -69,7 +240,7 @@ class LocalAIService {
     if (Object.keys(colors).length >= 4) strengths.push('Great color variety');
     if (categories['Outerwear'] >= 1) strengths.push('Good layering options');
 
-    // Identify gaps based on style and occasions
+    // Identify gaps
     if (!categories['Tops'] || categories['Tops'] < 3) {
       gaps.push('Need more versatile tops');
       suggestions.push('Add 2-3 more tops in different styles');
@@ -91,22 +262,13 @@ class LocalAIService {
       suggestions.push('Add shoes for different occasions');
     }
 
-    // Style-specific suggestions
-    if (userProfile.preferredStyle === 'Business' && !categories['Outerwear']) {
-      suggestions.push('Add professional blazers and formal shoes');
-    }
-    if (userProfile.preferredStyle === 'Casual' && categories['Tops'] < 3) {
-      suggestions.push('Add more casual tops like t-shirts and sweaters');
-    }
-
     return { strengths, gaps, suggestions };
   }
 
-  // Generate comprehensive outfit combinations using ALL items
+  // Generate comprehensive outfit combinations (fallback method)
   generateComprehensiveOutfitCombinations(items, userProfile, occasion) {
     const outfits = [];
     
-    // Categorize items
     const tops = items.filter(item => item.category === 'Tops');
     const bottoms = items.filter(item => item.category === 'Bottoms');
     const dresses = items.filter(item => item.category === 'Dresses');
@@ -114,16 +276,7 @@ class LocalAIService {
     const footwear = items.filter(item => item.category === 'Footwear');
     const accessories = items.filter(item => item.category === 'Accessories');
 
-    console.log('Item distribution:', {
-      tops: tops.length,
-      bottoms: bottoms.length,
-      dresses: dresses.length,
-      outerwear: outerwear.length,
-      footwear: footwear.length,
-      accessories: accessories.length
-    });
-
-    // Generate dress-based outfits (use ALL dresses)
+    // Generate dress-based outfits
     dresses.forEach((dress, index) => {
       const outfit = {
         id: `dress_outfit_${index + 1}`,
@@ -134,7 +287,6 @@ class LocalAIService {
         styleNotes: this.generateStyleNotes([dress], userProfile)
       };
       
-      // Add complementary items
       if (footwear.length > 0) {
         const bestShoes = this.findBestMatch(footwear, dress, occasion);
         if (bestShoes) outfit.items.push(bestShoes.id);
@@ -145,17 +297,14 @@ class LocalAIService {
         if (bestAccessory) outfit.items.push(bestAccessory.id);
       }
       
-      if (outerwear.length > 0 && (occasion === 'Work' || occasion === 'Formal' || this.needsOuterwear(dress, occasion))) {
-        const bestOuterwear = this.findBestMatch(outerwear, dress, occasion);
-        if (bestOuterwear) outfit.items.push(bestOuterwear.id);
-      }
-      
       outfits.push(outfit);
     });
 
-    // Generate top + bottom combinations (use ALL combinations)
+    // Generate top + bottom combinations
     tops.forEach((top, topIndex) => {
       bottoms.forEach((bottom, bottomIndex) => {
+        if (outfits.length >= 6) return; // Limit total outfits
+        
         const outfit = {
           id: `combo_outfit_${topIndex}_${bottomIndex}`,
           items: [top.id, bottom.id],
@@ -165,28 +314,11 @@ class LocalAIService {
           styleNotes: this.generateStyleNotes([top, bottom], userProfile)
         };
 
-        // Add outerwear if appropriate
-        if (outerwear.length > 0) {
-          const needsLayer = occasion === 'Work' || occasion === 'Formal' || 
-                           userProfile.preferredStyle === 'Business' ||
-                           this.needsOuterwear(top, occasion);
-          
-          if (needsLayer) {
-            const bestOuterwear = this.findBestMatch(outerwear, top, occasion);
-            if (bestOuterwear) {
-              outfit.items.push(bestOuterwear.id);
-              outfit.confidence += 0.1;
-            }
-          }
-        }
-
-        // Add footwear
         if (footwear.length > 0) {
           const bestShoes = this.findBestMatch(footwear, top, occasion);
           if (bestShoes) outfit.items.push(bestShoes.id);
         }
 
-        // Add accessories
         if (accessories.length > 0 && userProfile.preferredStyle !== 'Minimalist') {
           const bestAccessory = this.findBestMatch(accessories, top, occasion);
           if (bestAccessory) outfit.items.push(bestAccessory.id);
@@ -196,84 +328,45 @@ class LocalAIService {
       });
     });
 
-    // Generate single-item showcases for special pieces
-    const specialItems = [...outerwear, ...accessories].filter(item => 
-      this.isStatementPiece(item, userProfile)
-    );
-    
-    specialItems.forEach((item, index) => {
-      if (outfits.length < 8) { // Limit total outfits
-        const baseItems = this.findBaseItemsForStatement(item, tops, bottoms, dresses);
-        if (baseItems.length > 0) {
-          const outfit = {
-            id: `statement_outfit_${index}`,
-            items: [item.id, ...baseItems.map(i => i.id)],
-            confidence: this.calculateConfidence([item, ...baseItems], userProfile, occasion, 'statement'),
-            occasion: occasion || this.getBestOccasionForItem(item, userProfile),
-            description: this.generateOutfitDescription([item, ...baseItems], occasion, userProfile),
-            styleNotes: `This outfit highlights your ${item.name.toLowerCase()} as a statement piece.`
-          };
-          
-          outfits.push(outfit);
-        }
-      }
-    });
-
-    // Sort by confidence and occasion relevance
-    const sortedOutfits = outfits
-      .sort((a, b) => {
-        if (occasion && a.occasion === occasion && b.occasion !== occasion) return -1;
-        if (occasion && b.occasion === occasion && a.occasion !== occasion) return 1;
-        return b.confidence - a.confidence;
-      })
-      .slice(0, 6); // Return top 6 outfits
-
-    return sortedOutfits.map(outfit => ({
+    return outfits.slice(0, 6).map(outfit => ({
       ...outfit,
       confidence: Math.min(outfit.confidence, 0.95)
     }));
   }
 
-  // Enhanced confidence calculation based on occasion
+  // Helper methods (keeping existing implementations)
   calculateConfidence(items, userProfile, occasion, type) {
-    let confidence = 0.5; // Lower base confidence
+    let confidence = 0.5;
 
-    // Occasion-specific scoring
     if (occasion) {
       const occasionScore = this.getOccasionMatchScore(items, occasion, userProfile);
       confidence += occasionScore * 0.3;
     }
 
-    // Style matching
     if (userProfile.preferredStyle) {
       const styleScore = this.getStyleMatchScore(items, userProfile.preferredStyle);
       confidence += styleScore * 0.2;
     }
 
-    // Color coordination
     if (items.length > 1) {
       const colorScore = this.getColorCoordinationScore(items);
       confidence += colorScore * 0.15;
     }
 
-    // Completeness bonus
     const completenessScore = this.getCompletenessScore(items);
     confidence += completenessScore * 0.15;
 
-    // Body type compatibility
     if (userProfile.bodyType) {
       const bodyTypeScore = this.getBodyTypeScore(items, userProfile.bodyType);
       confidence += bodyTypeScore * 0.1;
     }
 
-    // Seasonal appropriateness
     const seasonScore = this.getSeasonalScore(items);
     confidence += seasonScore * 0.1;
 
     return Math.max(0.3, Math.min(confidence, 0.95));
   }
 
-  // Occasion-specific scoring
   getOccasionMatchScore(items, occasion, userProfile) {
     const occasionKeywords = {
       'Casual': ['casual', 't-shirt', 'jeans', 'sneakers', 'comfortable'],
@@ -297,7 +390,6 @@ class LocalAIService {
     return score / items.length;
   }
 
-  // Style matching score
   getStyleMatchScore(items, preferredStyle) {
     const styleKeywords = {
       'Casual': ['casual', 't-shirt', 'jeans', 'sneakers', 'comfortable'],
@@ -321,20 +413,14 @@ class LocalAIService {
     return score / items.length;
   }
 
-  // Color coordination scoring
   getColorCoordinationScore(items) {
     const colors = items.map(item => item.color.toLowerCase());
-    
-    // Neutral colors that go with everything
     const neutrals = ['black', 'white', 'gray', 'grey', 'brown', 'beige', 'navy'];
     const hasNeutral = colors.some(color => neutrals.includes(color));
     
-    if (hasNeutral) return 0.8; // High score for neutral combinations
-    
-    // Monochromatic (same color family)
+    if (hasNeutral) return 0.8;
     if (colors.every(color => color === colors[0])) return 0.9;
     
-    // Complementary color combinations
     const complementaryPairs = [
       ['blue', 'orange'], ['red', 'green'], ['yellow', 'purple'],
       ['blue', 'white'], ['red', 'white'], ['black', 'white']
@@ -346,37 +432,26 @@ class LocalAIService {
       }
     }
     
-    return 0.4; // Lower score for potentially clashing colors
+    return 0.4;
   }
 
-  // Outfit completeness scoring
   getCompletenessScore(items) {
     const categories = items.map(item => item.category);
-    const uniqueCategories = new Set(categories);
-    
     let score = 0;
     
-    // Base outfit (top + bottom OR dress)
     if (categories.includes('Dresses') || 
         (categories.includes('Tops') && categories.includes('Bottoms'))) {
       score += 0.5;
     }
     
-    // Footwear
     if (categories.includes('Footwear')) score += 0.2;
-    
-    // Outerwear for layering
     if (categories.includes('Outerwear')) score += 0.2;
-    
-    // Accessories for finishing touches
     if (categories.includes('Accessories')) score += 0.1;
     
     return score;
   }
 
-  // Body type compatibility (simplified)
   getBodyTypeScore(items, bodyType) {
-    // This is a simplified version - in a real app, you'd have detailed rules
     const bodyTypePreferences = {
       'Pear': ['a-line', 'flowy', 'loose top', 'fitted bottom'],
       'Apple': ['empire waist', 'v-neck', 'loose', 'flowy'],
@@ -397,7 +472,6 @@ class LocalAIService {
     return score / items.length;
   }
 
-  // Seasonal appropriateness
   getSeasonalScore(items) {
     const currentMonth = new Date().getMonth();
     const season = this.getCurrentSeason(currentMonth);
@@ -421,7 +495,6 @@ class LocalAIService {
     return score / items.length;
   }
 
-  // Helper methods
   getCurrentSeason(month) {
     if (month >= 2 && month <= 4) return 'spring';
     if (month >= 5 && month <= 7) return 'summer';
@@ -470,7 +543,6 @@ class LocalAIService {
   findBestMatch(items, baseItem, occasion) {
     if (items.length === 0) return null;
     
-    // Score each item based on color coordination and occasion appropriateness
     const scoredItems = items.map(item => ({
       item,
       score: this.getMatchScore(item, baseItem, occasion)
@@ -483,18 +555,15 @@ class LocalAIService {
   getMatchScore(item, baseItem, occasion) {
     let score = 0;
     
-    // Color coordination
     if (this.colorsMatch([item.color, baseItem.color])) {
       score += 0.5;
     }
     
-    // Occasion appropriateness
     const itemOccasions = this.getItemOccasions(item, {});
     if (occasion && itemOccasions.includes(occasion)) {
       score += 0.3;
     }
     
-    // Category appropriateness
     if (this.categoriesMatch(item.category, baseItem.category, occasion)) {
       score += 0.2;
     }
@@ -509,7 +578,6 @@ class LocalAIService {
     if (hasNeutral) return true;
     if (colors[0].toLowerCase() === colors[1].toLowerCase()) return true;
     
-    // Basic complementary colors
     const complementary = {
       'blue': ['white', 'gray', 'black', 'brown'],
       'red': ['white', 'black', 'gray'],
@@ -524,7 +592,6 @@ class LocalAIService {
   }
 
   categoriesMatch(category1, category2, occasion) {
-    // Define which categories work well together
     const goodCombinations = {
       'Tops': ['Bottoms', 'Outerwear', 'Accessories', 'Footwear'],
       'Bottoms': ['Tops', 'Outerwear', 'Accessories', 'Footwear'],
@@ -535,45 +602,6 @@ class LocalAIService {
     };
     
     return goodCombinations[category1]?.includes(category2) || false;
-  }
-
-  needsOuterwear(item, occasion) {
-    const itemText = item.name.toLowerCase();
-    return occasion === 'Work' || 
-           occasion === 'Formal' || 
-           itemText.includes('sleeveless') || 
-           itemText.includes('tank');
-  }
-
-  isStatementPiece(item, userProfile) {
-    const itemText = item.name.toLowerCase();
-    return itemText.includes('statement') || 
-           itemText.includes('bold') || 
-           itemText.includes('unique') ||
-           item.category === 'Accessories';
-  }
-
-  findBaseItemsForStatement(statementItem, tops, bottoms, dresses) {
-    // For statement pieces, find neutral base items
-    const neutralColors = ['black', 'white', 'gray', 'grey', 'brown', 'beige'];
-    
-    if (statementItem.category === 'Accessories') {
-      // Find neutral tops and bottoms
-      const neutralTops = tops.filter(item => 
-        neutralColors.includes(item.color.toLowerCase())
-      );
-      const neutralBottoms = bottoms.filter(item => 
-        neutralColors.includes(item.color.toLowerCase())
-      );
-      
-      if (neutralTops.length > 0 && neutralBottoms.length > 0) {
-        return [neutralTops[0], neutralBottoms[0]];
-      }
-      if (neutralTops.length > 0) return [neutralTops[0]];
-      if (neutralBottoms.length > 0) return [neutralBottoms[0]];
-    }
-    
-    return [];
   }
 
   generateOutfitDescription(items, occasion, userProfile) {
@@ -611,7 +639,6 @@ class LocalAIService {
       notes.push(`Perfectly aligned with your ${userProfile.preferredStyle} style preference.`);
     }
     
-    // Add color coordination note
     const colors = items.map(item => item.color);
     if (colors.length > 1 && this.colorsMatch(colors)) {
       notes.push(`The color coordination creates a harmonious and polished look.`);
@@ -634,13 +661,11 @@ class LocalAIService {
     return descriptions[style] || 'Stylish and versatile for various occasions.';
   }
 
-  // Enhanced missing items identification with marketplace integration
   async identifyMissingItemsWithProducts(outfit, wardrobeItems, userProfile) {
     const missingItems = [];
     const outfitItems = wardrobeItems.filter(item => outfit.items.includes(item.id));
     const categories = outfitItems.map(item => item.category);
 
-    // Check for missing essential categories
     if (!categories.includes('Footwear')) {
       const footwearItem = {
         category: 'Footwear',
@@ -651,7 +676,6 @@ class LocalAIService {
         priceRange: { min: 30, max: 120 }
       };
       
-      // Get marketplace products for this missing item
       try {
         const products = await marketplaceService.searchProducts(
           footwearItem.searchTerms,
@@ -661,7 +685,6 @@ class LocalAIService {
         );
         footwearItem.availableProducts = products.slice(0, 3);
       } catch (error) {
-        console.log('Could not fetch marketplace products for footwear');
         footwearItem.availableProducts = [];
       }
       
@@ -687,37 +710,10 @@ class LocalAIService {
         );
         accessoryItem.availableProducts = products.slice(0, 3);
       } catch (error) {
-        console.log('Could not fetch marketplace products for accessories');
         accessoryItem.availableProducts = [];
       }
       
       missingItems.push(accessoryItem);
-    }
-
-    if ((outfit.occasion === 'Work' || outfit.occasion === 'Formal') && !categories.includes('Outerwear')) {
-      const outerwearItem = {
-        category: 'Outerwear',
-        color: 'Black',
-        description: `Professional ${outfit.occasion.toLowerCase()} jacket or blazer`,
-        searchTerms: this.generateSearchTerms('Outerwear', outfit.occasion, userProfile),
-        priority: 'high',
-        priceRange: { min: 50, max: 200 }
-      };
-      
-      try {
-        const products = await marketplaceService.searchProducts(
-          outerwearItem.searchTerms,
-          'Outerwear',
-          outerwearItem.priceRange,
-          ['ebay', 'free']
-        );
-        outerwearItem.availableProducts = products.slice(0, 3);
-      } catch (error) {
-        console.log('Could not fetch marketplace products for outerwear');
-        outerwearItem.availableProducts = [];
-      }
-      
-      missingItems.push(outerwearItem);
     }
 
     return missingItems;
@@ -731,7 +727,7 @@ class LocalAIService {
     if (colors.includes('blue')) return 'Brown';
     if (colors.includes('red')) return 'Black';
     
-    return 'Black'; // Default safe choice
+    return 'Black';
   }
 
   generateSearchTerms(category, occasion, userProfile) {
@@ -745,7 +741,6 @@ class LocalAIService {
       baseTerms.push(userProfile.preferredStyle.toLowerCase());
     }
     
-    // Add category-specific terms
     const categoryTerms = {
       'Footwear': ['shoes', 'boots', 'sneakers'],
       'Accessories': ['jewelry', 'watch', 'belt', 'bag'],
@@ -783,7 +778,7 @@ class LocalAIService {
   }
 }
 
-const aiService = new LocalAIService();
+const aiService = new OpenAIService();
 
 export const generateOutfitRecommendations = async (wardrobeItems, userProfile, occasion = null) => {
   return await aiService.generateOutfitRecommendations(wardrobeItems, userProfile, occasion);
@@ -833,7 +828,6 @@ export const generateSmartShoppingList = async (wardrobeItems, userProfile, targ
 async function generateShoppingRecommendationsWithProducts(analysis, userProfile, targetOccasions) {
   const recommendations = [];
 
-  // Process each gap and get marketplace products
   for (const gap of analysis.gaps) {
     if (gap.includes('tops') && recommendations.length < 5) {
       const item = {
@@ -977,7 +971,6 @@ function generateSearchTerms(userProfile, filters) {
   if (filters.color) terms.push(filters.color.toLowerCase());
   if (filters.occasion) terms.push(filters.occasion.toLowerCase());
   
-  // Add style-specific terms
   if (userProfile.preferredStyle) {
     const styleTerms = {
       'Casual': ['casual', 'comfortable'],
@@ -1000,17 +993,13 @@ function rankProductsForUser(products, userProfile) {
   return products.map(product => {
     let score = 0;
     
-    // Price scoring
     if (product.price >= 20 && product.price <= 100) score += 2;
     else if (product.price < 20) score += 1;
     
-    // Rating scoring
     if (product.rating) score += product.rating;
     
-    // Source preference
     if (product.source === 'eBay') score += 1;
     
-    // Style matching
     if (userProfile.preferredStyle && 
         product.name.toLowerCase().includes(userProfile.preferredStyle.toLowerCase())) {
       score += 2;
