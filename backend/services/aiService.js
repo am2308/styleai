@@ -1,7 +1,7 @@
 import axios from 'axios';
 import marketplaceService from './marketplaceService.js';
 
-// Enhanced AI service with OpenAI GPT-4.1 integration
+// Enhanced AI service with OpenAI GPT-4.1 integration and complete outfit generation
 class OpenAIService {
   constructor() {
     this.openaiApiKey = process.env.OPENAI_API_KEY;
@@ -29,9 +29,9 @@ class OpenAIService {
         }
       }
 
-      // Fallback to local AI analysis
+      // Enhanced fallback to local AI analysis
       const analysis = this.analyzeWardrobe(wardrobeItems, userProfile);
-      const outfits = this.generateComprehensiveOutfitCombinations(wardrobeItems, userProfile, occasion);
+      const outfits = this.generateCompleteOutfitCombinations(wardrobeItems, userProfile, occasion);
       
       const outfitsWithMissing = await Promise.all(
         outfits.map(async outfit => {
@@ -61,25 +61,32 @@ class OpenAIService {
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4.1', // GPT-4.1 Turbo model
+        model: 'gpt-4-turbo-preview', // Using GPT-4 Turbo
         messages: [
           {
             role: 'system',
-            content: `You are an expert fashion stylist and personal shopper with deep knowledge of:
+            content: `You are an expert fashion stylist with deep knowledge of:
             - Color theory and coordination
-            - Body type styling
+            - Body type styling and flattering silhouettes
             - Occasion-appropriate dressing
-            - Current fashion trends
-            - Brand knowledge and quality assessment
+            - Current fashion trends and timeless classics
+            - Complete outfit composition (tops, bottoms, outerwear, footwear, accessories)
             
-            Provide detailed outfit recommendations in JSON format. Be creative, practical, and consider the user's personal style preferences.`
+            CRITICAL: Always create COMPLETE outfits using multiple items from the wardrobe. Never suggest incomplete outfits with only 1-2 items. Each outfit should include:
+            - A top OR dress as the base
+            - Bottoms (if not wearing a dress)
+            - Footwear
+            - Outerwear when appropriate
+            - Accessories when suitable
+            
+            Provide detailed outfit recommendations in JSON format.`
           },
           {
             role: 'user',
             content: prompt
           }
         ],
-        max_tokens: 2000,
+        max_tokens: 2500,
         temperature: 0.7,
         response_format: { type: "json_object" }
       },
@@ -110,44 +117,62 @@ class OpenAIService {
   }
 
   buildOutfitPrompt(wardrobeItems, userProfile, occasion) {
-    const wardrobeDescription = wardrobeItems.map(item => 
-      `- ${item.name} (${item.category}, ${item.color})`
-    ).join('\n');
+    // Categorize wardrobe items for better prompt structure
+    const itemsByCategory = this.categorizeWardrobeItems(wardrobeItems);
+    
+    const wardrobeDescription = Object.entries(itemsByCategory).map(([category, items]) => {
+      const itemList = items.map(item => `  - ${item.name} (ID: ${item.id}, Color: ${item.color})`).join('\n');
+      return `${category}:\n${itemList}`;
+    }).join('\n\n');
 
-    return `Create outfit recommendations using the following wardrobe items:
+    return `Create COMPLETE outfit combinations using the following wardrobe items:
 
-WARDROBE ITEMS:
+AVAILABLE WARDROBE ITEMS:
 ${wardrobeDescription}
 
 USER PROFILE:
 - Skin Tone: ${userProfile.skinTone || 'Not specified'}
 - Body Type: ${userProfile.bodyType || 'Not specified'}
 - Style Preference: ${userProfile.preferredStyle || 'Not specified'}
-${occasion ? `- Occasion: ${occasion}` : ''}
+${occasion ? `- Target Occasion: ${occasion}` : ''}
 
 TASK:
-Create 3-5 complete outfit combinations using ONLY the provided wardrobe items. For each outfit:
+Create 4-6 COMPLETE outfit combinations using ONLY the provided wardrobe items. Each outfit MUST include:
 
-1. Select 2-4 items that work well together
-2. Provide styling confidence score (0-100)
-3. Explain why the combination works
-4. Give styling tips
-5. Identify any missing items that would complete the look
+1. **Base Layer**: Either a top + bottom combination OR a dress
+2. **Footwear**: Always include shoes from the available footwear
+3. **Outerwear**: Include jackets/blazers when appropriate for the occasion
+4. **Accessories**: Add accessories when they enhance the look (avoid for minimalist style)
+
+For each outfit provide:
+- Item IDs from the wardrobe (use exact IDs provided above)
+- Styling confidence score (0-100)
+- Detailed explanation of why the combination works
+- Styling tips and notes
+- Any missing items that would complete the look
+
+IMPORTANT RULES:
+- Use ACTUAL item IDs from the wardrobe list above
+- Create COMPLETE outfits, not partial combinations
+- Ensure color coordination and style harmony
+- Consider the occasion appropriateness
+- Include at least 3-4 items per outfit
+- Prioritize versatile combinations that can work for multiple occasions
 
 Return response in this JSON format:
 {
   "recommendations": [
     {
-      "items": ["item_id_1", "item_id_2"],
+      "items": ["item_id_1", "item_id_2", "item_id_3", "item_id_4"],
       "confidence": 85,
       "occasion": "Casual",
-      "description": "Stylish casual outfit perfect for...",
-      "styleNotes": "The color combination creates...",
+      "description": "Complete casual outfit perfect for weekend activities",
+      "styleNotes": "The color combination creates a harmonious look that flatters your body type",
       "missingItems": [
         {
-          "category": "Footwear",
-          "description": "White sneakers to complete the casual look",
-          "priority": "medium"
+          "category": "Accessories",
+          "description": "A watch or bracelet to add finishing touches",
+          "priority": "low"
         }
       ]
     }
@@ -157,13 +182,36 @@ Return response in this JSON format:
     "gaps": ["Missing formal shoes", "Need more outerwear"],
     "suggestions": ["Add a blazer for professional looks"]
   }
-}
+}`;
+  }
 
-IMPORTANT: 
-- Use actual item IDs from the wardrobe
-- Consider color coordination, style harmony, and occasion appropriateness
-- Be specific about why combinations work
-- Suggest realistic missing items with proper categories`;
+  categorizeWardrobeItems(wardrobeItems) {
+    const categories = {
+      'Tops': [],
+      'Bottoms': [],
+      'Dresses': [],
+      'Outerwear': [],
+      'Footwear': [],
+      'Accessories': []
+    };
+
+    wardrobeItems.forEach(item => {
+      if (categories[item.category]) {
+        categories[item.category].push(item);
+      } else {
+        // Handle any miscategorized items
+        categories['Tops'].push(item);
+      }
+    });
+
+    // Remove empty categories for cleaner prompt
+    Object.keys(categories).forEach(key => {
+      if (categories[key].length === 0) {
+        delete categories[key];
+      }
+    });
+
+    return categories;
   }
 
   transformOpenAIResponse(aiResponse, wardrobeItems, userProfile) {
@@ -175,26 +223,290 @@ IMPORTANT:
         wardrobeItems.some(item => item.id === itemId)
       ) || [];
 
-      // If no valid items, create a combination from available items
-      if (validItems.length === 0 && wardrobeItems.length >= 2) {
-        validItems.push(wardrobeItems[0].id, wardrobeItems[1].id);
+      // If no valid items or too few items, create a complete combination
+      if (validItems.length < 2) {
+        const completeOutfit = this.createCompleteOutfitFromWardrobe(wardrobeItems, userProfile, rec.occasion);
+        validItems.push(...completeOutfit);
       }
 
       return {
         id: `openai_outfit_${index}`,
-        items: validItems,
-        confidence: (rec.confidence || 75) / 100, // Convert to 0-1 scale
+        items: [...new Set(validItems)], // Remove duplicates
+        confidence: Math.min((rec.confidence || 75) / 100, 0.95), // Convert to 0-1 scale
         occasion: rec.occasion || 'Casual',
-        description: rec.description || 'AI-curated outfit combination',
-        styleNotes: rec.styleNotes || 'Thoughtfully selected pieces that complement each other',
+        description: rec.description || 'AI-curated complete outfit combination',
+        styleNotes: rec.styleNotes || 'Thoughtfully selected pieces that work together harmoniously',
         missingItems: this.transformMissingItems(rec.missingItems || [])
       };
-    }).filter(rec => rec.items.length > 0);
+    }).filter(rec => rec.items.length >= 2); // Ensure minimum outfit completeness
 
     return {
       recommendations: transformedRecommendations,
       wardrobeAnalysis: aiResponse.wardrobeAnalysis || this.analyzeWardrobe(wardrobeItems, userProfile)
     };
+  }
+
+  createCompleteOutfitFromWardrobe(wardrobeItems, userProfile, occasion) {
+    const itemsByCategory = this.categorizeWardrobeItems(wardrobeItems);
+    const outfitItems = [];
+
+    // Strategy 1: Dress-based outfit
+    if (itemsByCategory.Dresses && itemsByCategory.Dresses.length > 0) {
+      outfitItems.push(itemsByCategory.Dresses[0].id);
+      
+      // Add footwear
+      if (itemsByCategory.Footwear && itemsByCategory.Footwear.length > 0) {
+        outfitItems.push(itemsByCategory.Footwear[0].id);
+      }
+      
+      // Add outerwear for formal occasions
+      if ((occasion === 'Work' || occasion === 'Formal') && itemsByCategory.Outerwear && itemsByCategory.Outerwear.length > 0) {
+        outfitItems.push(itemsByCategory.Outerwear[0].id);
+      }
+      
+      // Add accessories if not minimalist
+      if (userProfile.preferredStyle !== 'Minimalist' && itemsByCategory.Accessories && itemsByCategory.Accessories.length > 0) {
+        outfitItems.push(itemsByCategory.Accessories[0].id);
+      }
+    }
+    // Strategy 2: Top + Bottom combination
+    else if (itemsByCategory.Tops && itemsByCategory.Tops.length > 0 && 
+             itemsByCategory.Bottoms && itemsByCategory.Bottoms.length > 0) {
+      outfitItems.push(itemsByCategory.Tops[0].id);
+      outfitItems.push(itemsByCategory.Bottoms[0].id);
+      
+      // Add footwear
+      if (itemsByCategory.Footwear && itemsByCategory.Footwear.length > 0) {
+        outfitItems.push(itemsByCategory.Footwear[0].id);
+      }
+      
+      // Add outerwear
+      if (itemsByCategory.Outerwear && itemsByCategory.Outerwear.length > 0) {
+        outfitItems.push(itemsByCategory.Outerwear[0].id);
+      }
+      
+      // Add accessories
+      if (userProfile.preferredStyle !== 'Minimalist' && itemsByCategory.Accessories && itemsByCategory.Accessories.length > 0) {
+        outfitItems.push(itemsByCategory.Accessories[0].id);
+      }
+    }
+
+    return outfitItems;
+  }
+
+  // Enhanced local outfit generation for fallback
+  generateCompleteOutfitCombinations(items, userProfile, occasion) {
+    const outfits = [];
+    const itemsByCategory = this.categorizeWardrobeItems(items);
+    
+    console.log('Generating outfits from categories:', Object.keys(itemsByCategory));
+    console.log('Items per category:', Object.fromEntries(
+      Object.entries(itemsByCategory).map(([cat, items]) => [cat, items.length])
+    ));
+
+    // Strategy 1: Dress-based complete outfits
+    if (itemsByCategory.Dresses) {
+      itemsByCategory.Dresses.forEach((dress, index) => {
+        const outfit = {
+          id: `dress_complete_${index}`,
+          items: [dress.id],
+          confidence: 0.8,
+          occasion: occasion || this.getBestOccasionForItem(dress, userProfile),
+          description: `Complete ${dress.color.toLowerCase()} dress outfit`,
+          styleNotes: `Elegant ${dress.color.toLowerCase()} dress as the centerpiece`
+        };
+        
+        // Add footwear
+        if (itemsByCategory.Footwear && itemsByCategory.Footwear.length > 0) {
+          const bestShoes = this.findBestMatch(itemsByCategory.Footwear, dress, occasion);
+          if (bestShoes) outfit.items.push(bestShoes.id);
+        }
+        
+        // Add outerwear for appropriate occasions
+        if ((occasion === 'Work' || occasion === 'Formal' || occasion === 'Date Night') && 
+            itemsByCategory.Outerwear && itemsByCategory.Outerwear.length > 0) {
+          const bestOuterwear = this.findBestMatch(itemsByCategory.Outerwear, dress, occasion);
+          if (bestOuterwear) outfit.items.push(bestOuterwear.id);
+        }
+        
+        // Add accessories (except for minimalist style)
+        if (userProfile.preferredStyle !== 'Minimalist' && 
+            itemsByCategory.Accessories && itemsByCategory.Accessories.length > 0) {
+          const bestAccessory = this.findBestMatch(itemsByCategory.Accessories, dress, occasion);
+          if (bestAccessory) outfit.items.push(bestAccessory.id);
+        }
+        
+        outfit.confidence = this.calculateConfidence(
+          items.filter(item => outfit.items.includes(item.id)), 
+          userProfile, 
+          occasion, 
+          'complete_dress'
+        );
+        
+        outfits.push(outfit);
+      });
+    }
+
+    // Strategy 2: Top + Bottom complete combinations
+    if (itemsByCategory.Tops && itemsByCategory.Bottoms) {
+      let combinationCount = 0;
+      const maxCombinations = 8; // Limit to prevent too many outfits
+      
+      for (const top of itemsByCategory.Tops) {
+        for (const bottom of itemsByCategory.Bottoms) {
+          if (combinationCount >= maxCombinations) break;
+          
+          const outfit = {
+            id: `complete_combo_${combinationCount}`,
+            items: [top.id, bottom.id],
+            confidence: 0.7,
+            occasion: occasion || this.getBestOccasionForItems([top, bottom], userProfile),
+            description: `Complete outfit with ${top.color.toLowerCase()} ${top.name.toLowerCase()} and ${bottom.color.toLowerCase()} ${bottom.name.toLowerCase()}`,
+            styleNotes: `Coordinated ${top.color.toLowerCase()} and ${bottom.color.toLowerCase()} combination`
+          };
+
+          // Add footwear (essential for complete outfit)
+          if (itemsByCategory.Footwear && itemsByCategory.Footwear.length > 0) {
+            const bestShoes = this.findBestMatch(itemsByCategory.Footwear, top, occasion);
+            if (bestShoes) outfit.items.push(bestShoes.id);
+          }
+
+          // Add outerwear when appropriate
+          if (itemsByCategory.Outerwear && itemsByCategory.Outerwear.length > 0) {
+            const needsOuterwear = occasion === 'Work' || occasion === 'Formal' || 
+                                 userProfile.preferredStyle === 'Business' ||
+                                 this.isSeasonAppropriate('outerwear');
+            
+            if (needsOuterwear) {
+              const bestOuterwear = this.findBestMatch(itemsByCategory.Outerwear, top, occasion);
+              if (bestOuterwear) {
+                outfit.items.push(bestOuterwear.id);
+                outfit.confidence += 0.1; // Bonus for layering
+              }
+            }
+          }
+
+          // Add accessories for non-minimalist styles
+          if (userProfile.preferredStyle !== 'Minimalist' && 
+              itemsByCategory.Accessories && itemsByCategory.Accessories.length > 0) {
+            const bestAccessory = this.findBestMatch(itemsByCategory.Accessories, top, occasion);
+            if (bestAccessory) {
+              outfit.items.push(bestAccessory.id);
+              outfit.confidence += 0.05; // Small bonus for accessories
+            }
+          }
+
+          // Recalculate confidence based on complete outfit
+          outfit.confidence = this.calculateConfidence(
+            items.filter(item => outfit.items.includes(item.id)), 
+            userProfile, 
+            occasion, 
+            'complete_combo'
+          );
+
+          outfits.push(outfit);
+          combinationCount++;
+        }
+        if (combinationCount >= maxCombinations) break;
+      }
+    }
+
+    // Strategy 3: Statement piece outfits (if we have special items)
+    if (itemsByCategory.Outerwear && itemsByCategory.Outerwear.length > 0) {
+      itemsByCategory.Outerwear.forEach((outerwear, index) => {
+        if (outfits.length >= 10) return; // Limit total outfits
+        
+        // Find base items to go with the statement outerwear
+        const baseItems = this.findBaseItemsForOuterwear(outerwear, itemsByCategory);
+        if (baseItems.length >= 2) {
+          const outfit = {
+            id: `statement_outerwear_${index}`,
+            items: [outerwear.id, ...baseItems.map(item => item.id)],
+            confidence: 0.75,
+            occasion: occasion || 'Work',
+            description: `Sophisticated outfit featuring ${outerwear.color.toLowerCase()} ${outerwear.name.toLowerCase()}`,
+            styleNotes: `${outerwear.name} as the statement piece creates a polished, professional look`
+          };
+
+          // Add footwear
+          if (itemsByCategory.Footwear && itemsByCategory.Footwear.length > 0) {
+            const bestShoes = this.findBestMatch(itemsByCategory.Footwear, outerwear, occasion);
+            if (bestShoes && !outfit.items.includes(bestShoes.id)) {
+              outfit.items.push(bestShoes.id);
+            }
+          }
+
+          outfit.confidence = this.calculateConfidence(
+            items.filter(item => outfit.items.includes(item.id)), 
+            userProfile, 
+            occasion, 
+            'statement'
+          );
+
+          outfits.push(outfit);
+        }
+      });
+    }
+
+    // Sort by confidence and occasion relevance
+    const sortedOutfits = outfits
+      .filter(outfit => outfit.items.length >= 2) // Ensure minimum completeness
+      .sort((a, b) => {
+        // Prioritize occasion match
+        if (occasion) {
+          if (a.occasion === occasion && b.occasion !== occasion) return -1;
+          if (b.occasion === occasion && a.occasion !== occasion) return 1;
+        }
+        // Then by confidence
+        return b.confidence - a.confidence;
+      })
+      .slice(0, 6); // Return top 6 outfits
+
+    console.log(`Generated ${sortedOutfits.length} complete outfits`);
+    sortedOutfits.forEach((outfit, i) => {
+      console.log(`Outfit ${i + 1}: ${outfit.items.length} items - ${outfit.description}`);
+    });
+
+    return sortedOutfits;
+  }
+
+  findBaseItemsForOuterwear(outerwear, itemsByCategory) {
+    const baseItems = [];
+    
+    // Find neutral or coordinating tops and bottoms
+    if (itemsByCategory.Tops && itemsByCategory.Tops.length > 0) {
+      const compatibleTop = itemsByCategory.Tops.find(top => 
+        this.colorsMatch([top.color, outerwear.color]) || 
+        this.isNeutralColor(top.color)
+      ) || itemsByCategory.Tops[0];
+      baseItems.push(compatibleTop);
+    }
+    
+    if (itemsByCategory.Bottoms && itemsByCategory.Bottoms.length > 0) {
+      const compatibleBottom = itemsByCategory.Bottoms.find(bottom => 
+        this.colorsMatch([bottom.color, outerwear.color]) || 
+        this.isNeutralColor(bottom.color)
+      ) || itemsByCategory.Bottoms[0];
+      baseItems.push(compatibleBottom);
+    }
+    
+    return baseItems;
+  }
+
+  isNeutralColor(color) {
+    const neutrals = ['black', 'white', 'gray', 'grey', 'brown', 'beige', 'navy'];
+    return neutrals.includes(color.toLowerCase());
+  }
+
+  isSeasonAppropriate(itemType) {
+    const currentMonth = new Date().getMonth();
+    const season = this.getCurrentSeason(currentMonth);
+    
+    if (itemType === 'outerwear') {
+      return season === 'fall' || season === 'winter' || season === 'spring';
+    }
+    
+    return true;
   }
 
   transformMissingItems(missingItems) {
@@ -265,87 +577,18 @@ IMPORTANT:
     return { strengths, gaps, suggestions };
   }
 
-  // Generate comprehensive outfit combinations (fallback method)
-  generateComprehensiveOutfitCombinations(items, userProfile, occasion) {
-    const outfits = [];
-    
-    const tops = items.filter(item => item.category === 'Tops');
-    const bottoms = items.filter(item => item.category === 'Bottoms');
-    const dresses = items.filter(item => item.category === 'Dresses');
-    const outerwear = items.filter(item => item.category === 'Outerwear');
-    const footwear = items.filter(item => item.category === 'Footwear');
-    const accessories = items.filter(item => item.category === 'Accessories');
-
-    // Generate dress-based outfits
-    dresses.forEach((dress, index) => {
-      const outfit = {
-        id: `dress_outfit_${index + 1}`,
-        items: [dress.id],
-        confidence: this.calculateConfidence([dress], userProfile, occasion, 'dress'),
-        occasion: occasion || this.getBestOccasionForItem(dress, userProfile),
-        description: this.generateOutfitDescription([dress], occasion, userProfile),
-        styleNotes: this.generateStyleNotes([dress], userProfile)
-      };
-      
-      if (footwear.length > 0) {
-        const bestShoes = this.findBestMatch(footwear, dress, occasion);
-        if (bestShoes) outfit.items.push(bestShoes.id);
-      }
-      
-      if (accessories.length > 0 && userProfile.preferredStyle !== 'Minimalist') {
-        const bestAccessory = this.findBestMatch(accessories, dress, occasion);
-        if (bestAccessory) outfit.items.push(bestAccessory.id);
-      }
-      
-      outfits.push(outfit);
-    });
-
-    // Generate top + bottom combinations
-    tops.forEach((top, topIndex) => {
-      bottoms.forEach((bottom, bottomIndex) => {
-        if (outfits.length >= 6) return; // Limit total outfits
-        
-        const outfit = {
-          id: `combo_outfit_${topIndex}_${bottomIndex}`,
-          items: [top.id, bottom.id],
-          confidence: this.calculateConfidence([top, bottom], userProfile, occasion, 'combo'),
-          occasion: occasion || this.getBestOccasionForItems([top, bottom], userProfile),
-          description: this.generateOutfitDescription([top, bottom], occasion, userProfile),
-          styleNotes: this.generateStyleNotes([top, bottom], userProfile)
-        };
-
-        if (footwear.length > 0) {
-          const bestShoes = this.findBestMatch(footwear, top, occasion);
-          if (bestShoes) outfit.items.push(bestShoes.id);
-        }
-
-        if (accessories.length > 0 && userProfile.preferredStyle !== 'Minimalist') {
-          const bestAccessory = this.findBestMatch(accessories, top, occasion);
-          if (bestAccessory) outfit.items.push(bestAccessory.id);
-        }
-
-        outfits.push(outfit);
-      });
-    });
-
-    return outfits.slice(0, 6).map(outfit => ({
-      ...outfit,
-      confidence: Math.min(outfit.confidence, 0.95)
-    }));
-  }
-
-  // Helper methods (keeping existing implementations)
+  // All the helper methods remain the same...
   calculateConfidence(items, userProfile, occasion, type) {
-    let confidence = 0.5;
+    let confidence = 0.6; // Higher base confidence for complete outfits
 
     if (occasion) {
       const occasionScore = this.getOccasionMatchScore(items, occasion, userProfile);
-      confidence += occasionScore * 0.3;
+      confidence += occasionScore * 0.25;
     }
 
     if (userProfile.preferredStyle) {
       const styleScore = this.getStyleMatchScore(items, userProfile.preferredStyle);
-      confidence += styleScore * 0.2;
+      confidence += styleScore * 0.15;
     }
 
     if (items.length > 1) {
@@ -354,7 +597,7 @@ IMPORTANT:
     }
 
     const completenessScore = this.getCompletenessScore(items);
-    confidence += completenessScore * 0.15;
+    confidence += completenessScore * 0.2; // Higher weight for completeness
 
     if (userProfile.bodyType) {
       const bodyTypeScore = this.getBodyTypeScore(items, userProfile.bodyType);
@@ -362,9 +605,14 @@ IMPORTANT:
     }
 
     const seasonScore = this.getSeasonalScore(items);
-    confidence += seasonScore * 0.1;
+    confidence += seasonScore * 0.05;
 
-    return Math.max(0.3, Math.min(confidence, 0.95));
+    // Bonus for complete outfits
+    if (type.includes('complete') && items.length >= 3) {
+      confidence += 0.1;
+    }
+
+    return Math.max(0.4, Math.min(confidence, 0.95));
   }
 
   getOccasionMatchScore(items, occasion, userProfile) {
@@ -432,23 +680,25 @@ IMPORTANT:
       }
     }
     
-    return 0.4;
+    return 0.5;
   }
 
   getCompletenessScore(items) {
     const categories = items.map(item => item.category);
     let score = 0;
     
+    // Base outfit requirement
     if (categories.includes('Dresses') || 
         (categories.includes('Tops') && categories.includes('Bottoms'))) {
-      score += 0.5;
+      score += 0.4;
     }
     
-    if (categories.includes('Footwear')) score += 0.2;
+    // Essential completeness factors
+    if (categories.includes('Footwear')) score += 0.3;
     if (categories.includes('Outerwear')) score += 0.2;
     if (categories.includes('Accessories')) score += 0.1;
     
-    return score;
+    return Math.min(score, 1.0);
   }
 
   getBodyTypeScore(items, bodyType) {
@@ -611,17 +861,17 @@ IMPORTANT:
     
     if (categories.includes('Dresses')) {
       const dress = items.find(item => item.category === 'Dresses');
-      return `Elegant ${dress.color.toLowerCase()} dress perfect for ${occasion || 'any occasion'}. ${this.getStyleDescription(userProfile.preferredStyle)}`;
+      return `Complete ${dress.color.toLowerCase()} dress outfit perfect for ${occasion || 'any occasion'}. ${this.getStyleDescription(userProfile.preferredStyle)}`;
     } else {
       const top = items.find(item => item.category === 'Tops');
       const bottom = items.find(item => item.category === 'Bottoms');
       
       if (top && bottom) {
-        return `Stylish combination of ${top.color.toLowerCase()} ${top.name.toLowerCase()} with ${bottom.color.toLowerCase()} ${bottom.name.toLowerCase()}. Perfect for ${occasion || 'everyday wear'}.`;
+        return `Complete outfit featuring ${top.color.toLowerCase()} ${top.name.toLowerCase()} with ${bottom.color.toLowerCase()} ${bottom.name.toLowerCase()}. Perfect for ${occasion || 'everyday wear'}.`;
       }
     }
     
-    return `A well-coordinated outfit featuring ${primaryColor.toLowerCase()} tones, ideal for ${occasion || 'various occasions'}.`;
+    return `A well-coordinated complete outfit featuring ${primaryColor.toLowerCase()} tones, ideal for ${occasion || 'various occasions'}.`;
   }
 
   generateStyleNotes(items, userProfile) {
@@ -644,7 +894,12 @@ IMPORTANT:
       notes.push(`The color coordination creates a harmonious and polished look.`);
     }
     
-    return notes.join(' ') || 'A well-balanced outfit that showcases your personal style.';
+    // Add completeness note
+    if (items.length >= 3) {
+      notes.push(`This complete outfit includes all essential elements for a well-put-together look.`);
+    }
+    
+    return notes.join(' ') || 'A well-balanced complete outfit that showcases your personal style.';
   }
 
   getStyleDescription(style) {
@@ -761,10 +1016,10 @@ IMPORTANT:
       recommendations: [
         {
           id: 'mock_outfit_1',
-          items: wardrobeItems.slice(0, Math.min(2, wardrobeItems.length)).map(item => item.id),
+          items: wardrobeItems.slice(0, Math.min(3, wardrobeItems.length)).map(item => item.id),
           confidence: 0.75,
           occasion: occasion || 'Casual',
-          description: 'A versatile outfit that works well with your style preferences.',
+          description: 'A versatile complete outfit that works well with your style preferences.',
           styleNotes: 'This combination creates a balanced look that complements your features.',
           missingItems: []
         }
