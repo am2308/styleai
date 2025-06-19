@@ -1,7 +1,7 @@
 import axios from 'axios';
 import marketplaceService from './marketplaceService.js';
 
-// Enhanced AI service with better outfit generation
+// Enhanced AI service with better outfit generation and marketplace integration
 class LocalAIService {
   constructor() {
     console.log('Using enhanced local AI service for outfit recommendations');
@@ -17,7 +17,7 @@ class LocalAIService {
       // Generate multiple outfit combinations using ALL items
       const outfits = this.generateComprehensiveOutfitCombinations(wardrobeItems, userProfile, occasion);
       
-      // Generate missing items for each outfit
+      // Generate missing items for each outfit with marketplace products
       const outfitsWithMissing = await Promise.all(
         outfits.map(async outfit => {
           const missingItems = await this.identifyMissingItemsWithProducts(outfit, wardrobeItems, userProfile);
