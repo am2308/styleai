@@ -796,7 +796,7 @@ export const generateMarketplaceRecommendations = async (userProfile, filters = 
     // Generate search terms based on user profile and filters
     const searchTerms = generateSearchTerms(userProfile, { category, color, occasion });
     
-    // Search marketplace
+    // Search marketplace with proper sources
     const products = await marketplaceService.searchProducts(
       searchTerms,
       category,
