@@ -79,7 +79,7 @@ class LocalAIService {
       
       // Create prompt for OpenAI
       const prompt = {
-        model: "gpt-4",
+        model: "gpt-4.1",
         messages: [
           {
             role: "system",
@@ -971,7 +971,7 @@ async function generateOpenAIMarketplaceRecommendations(userProfile, filters) {
     
     // Create prompt for OpenAI
     const prompt = {
-      model: "gpt-4",
+      model: "gpt-4.1",
       messages: [
         {
           role: "system",
@@ -1102,7 +1102,7 @@ async function generateOpenAIShoppingList(wardrobeItems, userProfile, targetOcca
     
     // Create prompt for OpenAI
     const prompt = {
-      model: "gpt-4",
+      model: "gpt-4.1",
       messages: [
         {
           role: "system",
