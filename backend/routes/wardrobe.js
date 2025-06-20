@@ -1,7 +1,7 @@
 import express from 'express';
 import Joi from 'joi';
 import { authenticateToken } from '../middleware/auth.js';
-import { upload, handleUploadError } from '../middleware/upload.js';
+import { upload, handleUploadError, validateUploadedFile } from '../middleware/upload.js';
 import { uploadImageToS3, deleteImageFromS3, testS3Connection } from '../services/s3Service.js';
 import { 
   addWardrobeItem, 
@@ -21,16 +21,21 @@ const wardrobeItemSchema = Joi.object({
 // Test S3 connection endpoint (for debugging)
 router.get('/test-s3', authenticateToken, async (req, res) => {
   try {
+    console.log('🧪 Testing S3 connection for user:', req.user.id);
     const isConnected = await testS3Connection();
+    
     res.json({ 
       s3Connected: isConnected,
       bucket: process.env.S3_BUCKET,
-      region: process.env.S3_REGION || process.env.AWS_REGION
+      region: process.env.S3_REGION || process.env.AWS_REGION,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
+    console.error('❌ S3 test endpoint error:', error);
     res.status(500).json({ 
       error: 'S3 connection test failed',
-      details: error.message 
+      details: error.message,
+      s3Connected: false
     });
   }
 });
@@ -41,6 +46,12 @@ router.get('/', authenticateToken, async (req, res, next) => {
     console.log('📋 Fetching wardrobe items for user:', req.user.id);
     const items = await getUserWardrobeItems(req.user.id);
     console.log(`✅ Found ${items.length} wardrobe items`);
+    
+    // Log image URLs for debugging
+    items.forEach((item, index) => {
+      console.log(`Item ${index + 1}: ${item.name} - Image: ${item.imageUrl}`);
+    });
+    
     res.json(items);
   } catch (error) {
     console.error('❌ Error fetching wardrobe items:', error);
@@ -48,49 +59,66 @@ router.get('/', authenticateToken, async (req, res, next) => {
   }
 });
 
-// Add wardrobe item with image upload
+// Add wardrobe item with comprehensive image upload handling
 router.post('/', authenticateToken, (req, res, next) => {
   console.log('📤 Starting wardrobe item upload for user:', req.user.id);
+  console.log('Request headers:', {
+    'content-type': req.headers['content-type'],
+    'content-length': req.headers['content-length']
+  });
   
-  // Use multer middleware with error handling
+  // Use multer middleware with comprehensive error handling
   upload.single('image')(req, res, async (uploadErr) => {
     if (uploadErr) {
       console.error('❌ Multer upload error:', uploadErr);
       return handleUploadError(uploadErr, req, res, next);
     }
 
+    // Validate uploaded file
+    const fileValidationError = validateUploadedFile(req, res, () => {});
+    if (fileValidationError) {
+      return; // Response already sent by validateUploadedFile
+    }
+
     try {
-      console.log('📝 Validating form data...');
+      console.log('📝 Processing wardrobe item upload...');
       console.log('Request body:', req.body);
-      console.log('Uploaded file:', req.file ? {
+      console.log('Uploaded file details:', {
         originalname: req.file.originalname,
         mimetype: req.file.mimetype,
         size: req.file.size,
-        bufferLength: req.file.buffer?.length
-      } : 'No file');
+        bufferLength: req.file.buffer?.length,
+        encoding: req.file.encoding
+      });
 
       // Validate form data
       const { error, value } = wardrobeItemSchema.validate(req.body);
       if (error) {
-        console.error('❌ Validation error:', error.details[0].message);
-        return res.status(400).json({ error: error.details[0].message });
+        console.error('❌ Form validation error:', error.details[0].message);
+        return res.status(400).json({ 
+          error: error.details[0].message,
+          code: 'VALIDATION_ERROR'
+        });
       }
 
-      // Check if file was uploaded
-      if (!req.file) {
-        console.error('❌ No image file provided');
-        return res.status(400).json({ error: 'Image file is required' });
-      }
+      console.log('✅ Form validation passed:', value);
 
-      // Validate file buffer
+      // Additional file buffer validation
       if (!req.file.buffer || req.file.buffer.length === 0) {
-        console.error('❌ Empty file buffer');
-        return res.status(400).json({ error: 'Invalid file: empty or corrupted' });
+        console.error('❌ Empty file buffer detected');
+        return res.status(400).json({ 
+          error: 'Invalid file: empty or corrupted buffer',
+          code: 'EMPTY_FILE_BUFFER'
+        });
       }
 
-      console.log('✅ Validation passed, uploading to S3...');
+      // Check if buffer contains valid image data
+      const bufferStart = req.file.buffer.slice(0, 10).toString('hex');
+      console.log('📊 File buffer preview (first 10 bytes):', bufferStart);
 
-      // Upload image to S3
+      console.log('☁️ Starting S3 upload...');
+
+      // Upload image to S3 with comprehensive error handling
       let imageUrl;
       try {
         imageUrl = await uploadImageToS3(req.file, req.user.id, value.category);
@@ -99,7 +127,8 @@ router.post('/', authenticateToken, (req, res, next) => {
         console.error('❌ S3 upload failed:', s3Error);
         return res.status(500).json({ 
           error: 'Failed to upload image to storage',
-          details: s3Error.message 
+          details: s3Error.message,
+          code: 'S3_UPLOAD_FAILED'
         });
       }
 
@@ -112,7 +141,11 @@ router.post('/', authenticateToken, (req, res, next) => {
         imageUrl,
       });
 
-      console.log('✅ Wardrobe item created successfully:', item.id);
+      console.log('✅ Wardrobe item created successfully:', {
+        id: item.id,
+        name: item.name,
+        imageUrl: item.imageUrl
+      });
 
       res.status(201).json(item);
 

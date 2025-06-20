@@ -2,15 +2,16 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { S3Client } from '@aws-sdk/client-s3';
 
-// Validate environment variables - Enhanced for better debugging
+// Enhanced AWS configuration validation
 const validateAWSConfig = () => {
   console.log('🔧 Validating AWS Configuration...');
   
   const required = ['AWS_REGION'];
-  const optional = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'S3_BUCKET'];
+  const s3Required = ['S3_BUCKET'];
   
   // Check required variables
   const missing = required.filter(key => !process.env[key]);
+  const s3Missing = s3Required.filter(key => !process.env[key]);
   
   if (missing.length > 0) {
     throw new Error(`Missing required AWS environment variables: ${missing.join(', ')}`);
@@ -33,11 +34,13 @@ const validateAWSConfig = () => {
   }
   
   // Check S3 configuration
-  if (process.env.S3_BUCKET) {
+  if (s3Missing.length > 0) {
+    console.error('❌ Missing S3 configuration:', s3Missing.join(', '));
+    console.error('   Image uploads will fail without S3_BUCKET');
+    throw new Error(`Missing required S3 environment variables: ${s3Missing.join(', ')}`);
+  } else {
     console.log('✅ S3 Bucket:', process.env.S3_BUCKET);
     console.log('✅ S3 Region:', process.env.S3_REGION || process.env.AWS_REGION);
-  } else {
-    console.warn('⚠️  S3_BUCKET not configured - image uploads will fail');
   }
   
   // Check DynamoDB tables
@@ -59,7 +62,7 @@ try {
   }
 }
 
-// Enhanced AWS Configuration with better error handling
+// Enhanced AWS Configuration
 const awsConfig = {
   region: process.env.AWS_REGION || 'ap-south-1',
   // Only specify credentials if they exist (let SDK use default chain otherwise)
@@ -81,13 +84,21 @@ console.log('🔧 AWS SDK Configuration:', {
 const dynamoClient = new DynamoDBClient(awsConfig);
 export const dynamoDB = DynamoDBDocumentClient.from(dynamoClient);
 
-// S3 Configuration with enhanced settings
+// S3 Configuration with enhanced settings for image uploads
 export const s3Client = new S3Client({
   ...awsConfig,
   region: process.env.S3_REGION || process.env.AWS_REGION || 'ap-south-1',
-  // Add additional S3-specific configuration
+  // Enhanced S3-specific configuration for better image handling
   forcePathStyle: false, // Use virtual-hosted-style URLs
   useAccelerateEndpoint: false, // Disable transfer acceleration by default
+  // Add request timeout for better error handling
+  requestHandler: {
+    requestTimeout: 30000, // 30 seconds
+    httpsAgent: {
+      maxSockets: 25,
+      keepAlive: true
+    }
+  }
 });
 
 export const TABLES = {
@@ -125,13 +136,26 @@ export const testAWSConnection = async () => {
       throw new Error(`DynamoDB: ${dynamoError.message}`);
     }
     
-    // Test S3 connection
+    // Test S3 connection and permissions
     if (S3_BUCKET) {
       try {
         const { HeadBucketCommand } = await import('@aws-sdk/client-s3');
         await s3Client.send(new HeadBucketCommand({ Bucket: S3_BUCKET }));
         console.log('✅ S3 connection successful');
         console.log(`   Bucket '${S3_BUCKET}' is accessible`);
+        
+        // Test S3 permissions by attempting to list objects
+        try {
+          const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+          const listResult = await s3Client.send(new ListObjectsV2Command({
+            Bucket: S3_BUCKET,
+            MaxKeys: 1
+          }));
+          console.log('✅ S3 list permission verified');
+        } catch (listError) {
+          console.warn('⚠️  S3 list permission may be limited:', listError.message);
+        }
+        
       } catch (s3Error) {
         console.error('❌ S3 connection failed:', s3Error.message);
         
